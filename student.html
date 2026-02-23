@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>تسجيل الحضور</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Tahoma, Arial; background:#0b1220; color:#e8eefc; margin:0; }
+    .wrap { max-width: 520px; margin: 0 auto; padding: 20px; }
+    .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 18px; padding: 16px; }
+    label { display:block; font-size: 14px; opacity: 0.9; margin-bottom: 6px; }
+    input { width:100%; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.18); background: rgba(0,0,0,0.25); color:#e8eefc; }
+    button { width:100%; margin-top: 10px; padding: 12px 14px; border-radius: 12px; border: 0; cursor:pointer; font-weight: 800; background: #5eead4; color:#06111f; }
+    .muted { opacity: 0.8; font-size: 13px; }
+    .ok { text-align:center; padding: 18px; }
+    .ramadan { display:flex; justify-content:center; margin: 14px 0 6px; }
+    .pill { display:inline-block; padding: 8px 10px; border-radius: 999px; background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.12); }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h2>تسجيل الحضور</h2>
+    <div class="card" id="formCard">
+      <div class="muted" style="margin-bottom:10px;">
+        اكتب بياناتك والكود الظاهر على شاشة الدكتور.
+      </div>
+
+      <div style="margin-bottom:10px;">
+        <span class="pill">Session: <span id="sidBox">-</span></span>
+      </div>
+
+      <label>اسم الطالب</label>
+      <input id="studentName" type="text" placeholder="مثال: أحمد محمد" />
+
+      <div style="height:10px"></div>
+
+      <label>Student ID</label>
+      <input id="studentId" type="text" placeholder="مثال: 20231234" />
+
+      <div style="height:10px"></div>
+
+      <label>الكود</label>
+      <input id="code" type="text" inputmode="numeric" maxlength="6" placeholder="6 أرقام" />
+
+      <button id="submitBtn">تسليم</button>
+      <div class="muted" id="msg" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card ok" id="successCard" style="display:none;">
+      <div class="ramadan" aria-hidden="true">
+        <!-- لوجو رمضان لطيف (هلال + نجمة) SVG -->
+        <svg width="88" height="88" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M78 14c-23 7-39 28-39 53 0 25 16 46 39 53-31 0-56-25-56-56S47 14 78 14Z" fill="rgba(94,234,212,0.95)"/>
+          <path d="M92 42l4 10 10 4-10 4-4 10-4-10-10-4 10-4 4-10Z" fill="rgba(255,255,255,0.95)"/>
+        </svg>
+      </div>
+      <h3>شكرًا ✅</h3>
+      <div style="font-size:18px; font-weight:800;">رمضان كريم 🌙</div>
+      <div class="muted" style="margin-top:8px;">تم تسجيل حضورك بنجاح.</div>
+    </div>
+  </div>
+
+<script>
+  // ضع بيانات مشروعك هنا
+  const SUPABASE_URL = "";
+  const SUPABASE_ANON_KEY = "";
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  const el = (id) => document.getElementById(id);
+
+  function getSid() {
+    const u = new URL(location.href);
+    return u.searchParams.get("sid");
+  }
+
+  function getOrCreateDeviceId() {
+    const key = "attendance_device_id_v1";
+    let v = localStorage.getItem(key);
+    if (!v) {
+      v = (crypto?.randomUUID?.() || (Math.random().toString(16).slice(2) + Date.now().toString(16)));
+      localStorage.setItem(key, v);
+    }
+    return v;
+  }
+
+  function setMsg(t) { el("msg").textContent = t || ""; }
+
+  async function loadSession(sid) {
+    const { data, error } = await supabase
+      .from("sessions")
+      .select("id, active, ends_at, max_per_device, current_code, code_expires_at")
+      .eq("id", sid)
+      .single();
+    if (error) throw error;
+    return data;
+  }
+
+  async function countDeviceSubmits(sid, deviceId) {
+    const { count, error } = await supabase
+      .from("attendance")
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", sid)
+      .eq("device_id", deviceId);
+    if (error) throw error;
+    return count || 0;
+  }
+
+  async function submitAttendance() {
+    const sid = getSid();
+    if (!sid) { setMsg("الرابط غير صحيح (لا يوجد sid)."); return; }
+
+    const studentName = el("studentName").value.trim();
+    const studentId = el("studentId").value.trim();
+    const code = el("code").value.trim();
+
+    if (!studentName || !studentId || !code) {
+      setMsg("من فضلك املا كل البيانات.");
+      return;
+    }
+    if (code.length !== 6) {
+      setMsg("الكود لازم يكون 6 أرقام.");
+      return;
+    }
+
+    const deviceId = getOrCreateDeviceId();
+    const session = await loadSession(sid);
+
+    const now = new Date();
+    if (!session.active) { setMsg("الجلسة غير نشطة."); return; }
+    if (now > new Date(session.ends_at)) { setMsg("انتهى وقت التسجيل."); return; }
+
+    if (!session.current_code || !session.code_expires_at) {
+      setMsg("الكود غير جاهز. اطلب من الدكتور يبدأ الجلسة/يعرض الكود.");
+      return;
+    }
+
+    if (code !== session.current_code) { setMsg("الكود غير صحيح."); return; }
+    if (now > new Date(session.code_expires_at)) { setMsg("الكود انتهت صلاحيته — حاول تاني بالكود الجديد."); return; }
+
+    const maxPerDevice = Number(session.max_per_device || 1);
+    const used = await countDeviceSubmits(sid, deviceId);
+    if (used >= maxPerDevice) {
+      setMsg("تم الوصول للحد الأقصى للتسجيل من هذا الجهاز في هذه الجلسة.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("attendance")
+      .insert([{
+        session_id: sid,
+        student_id: studentId,
+        student_name: studentName,
+        device_id: deviceId
+      }]);
+
+    if (error) {
+      // لو الطالب سجل قبل كده هيديك خطأ unique constraint
+      const msg = (error.message || "").toLowerCase().includes("unique")
+        ? "تم تسجيل هذا الـ ID من قبل في نفس الجلسة."
+        : ("حصل خطأ: " + (error.message || error));
+      setMsg(msg);
+      return;
+    }
+
+    // Success UI
+    el("formCard").style.display = "none";
+    el("successCard").style.display = "block";
+  }
+
+  (function init() {
+    const sid = getSid();
+    el("sidBox").textContent = sid || "-";
+    el("submitBtn").addEventListener("click", async () => {
+      try {
+        el("submitBtn").disabled = true;
+        setMsg("جارٍ الإرسال...");
+        await submitAttendance();
+      } catch (e) {
+        setMsg("حصل خطأ: " + (e?.message || e));
+      } finally {
+        el("submitBtn").disabled = false;
+      }
+    });
+  })();
+</script>
+</body>
+</html>

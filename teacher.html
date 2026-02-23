@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>صفحة الدكتور - الحضور</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Tahoma, Arial; background:#0b1220; color:#e8eefc; margin:0; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 20px; }
+    .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 18px; padding: 16px; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    label { display:block; font-size: 14px; opacity: 0.9; margin-bottom: 6px; }
+    input { width:100%; padding: 10px 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.18); background: rgba(0,0,0,0.25); color:#e8eefc; }
+    button { padding: 10px 14px; border-radius: 12px; border: 0; cursor:pointer; font-weight: 700; }
+    .btn { background: #5eead4; color:#06111f; }
+    .btn2 { background: rgba(255,255,255,0.12); color:#e8eefc; border: 1px solid rgba(255,255,255,0.16); }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap: wrap; }
+    .pill { padding: 8px 10px; border-radius: 999px; background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.12); }
+    .bigcode { font-size: 46px; letter-spacing: 6px; font-weight: 900; }
+    .muted { opacity: 0.8; font-size: 13px; }
+    #qrcode { background: white; padding: 10px; border-radius: 14px; display:inline-block; }
+    .full { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>صفحة الدكتور - تشغيل الحضور بالـ QR والكود المتغير</h2>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <label>مدة التسجيل (دقيقة)</label>
+          <input id="durationMin" type="number" min="1" max="180" value="10" />
+        </div>
+        <div>
+          <label>تجديد الكود كل (ثانية)</label>
+          <input id="codeIntervalSec" type="number" min="10" max="300" value="60" />
+        </div>
+        <div>
+          <label>عدد مرات السماح للتسجيل من نفس الجهاز</label>
+          <input id="maxPerDevice" type="number" min="1" max="5" value="1" />
+        </div>
+
+        <div class="row full">
+          <button class="btn" id="startBtn">ابدأ الجلسة</button>
+          <button class="btn2" id="stopBtn" disabled>إنهاء الجلسة</button>
+          <span class="pill" id="statusPill">غير نشطة</span>
+        </div>
+
+        <div class="full">
+          <div class="row">
+            <div class="pill"><span class="muted">Session ID:</span> <span id="sid">-</span></div>
+            <div class="pill"><span class="muted">ينتهي:</span> <span id="endsAt">-</span></div>
+            <div class="pill"><span class="muted">انتهاء الكود:</span> <span id="codeExp">-</span></div>
+          </div>
+        </div>
+
+        <div class="card full" style="background: rgba(255,255,255,0.04);">
+          <div class="grid" style="align-items:center;">
+            <div>
+              <div class="muted">الكود الحالي (يتغير تلقائيًا)</div>
+              <div class="bigcode" id="codeBox">------</div>
+              <div class="muted" id="hint">ابدأ الجلسة لعرض الـ QR والكود</div>
+            </div>
+            <div style="text-align:left;">
+              <div class="muted" style="margin-bottom:10px;">QR لصفحة الطلاب</div>
+              <div id="qrcode"></div>
+              <div class="muted" style="margin-top:10px;" id="studentLinkBox"></div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+<script>
+  // 1) ضع بيانات مشروعك هنا
+  const SUPABASE_URL = "";
+  const SUPABASE_ANON_KEY = "";
+
+  // 2) ضع رابط صفحة الطالب بعد رفعها
+  const STUDENT_URL = "https://YOUR_SITE_DOMAIN/student.html"; // مثال: https://myapp.netlify.app/student.html
+
+  const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+  let currentSessionId = null;
+  let rotateTimer = null;
+  let sessionPollTimer = null;
+
+  const el = (id) => document.getElementById(id);
+
+  function fmt(dt) {
+    try { return new Date(dt).toLocaleString("ar-EG"); } catch { return dt; }
+  }
+
+  function randomCode6() {
+    const n = Math.floor(Math.random() * 1000000);
+    return String(n).padStart(6, "0");
+  }
+
+  function clearQr() {
+    el("qrcode").innerHTML = "";
+  }
+
+  function drawQr(url) {
+    clearQr();
+    new QRCode(el("qrcode"), { text: url, width: 180, height: 180 });
+  }
+
+  async function createSession() {
+    const durationMin = Number(el("durationMin").value || 10);
+    const codeIntervalSec = Number(el("codeIntervalSec").value || 60);
+    const maxPerDevice = Number(el("maxPerDevice").value || 1);
+
+    const now = new Date();
+    const endsAt = new Date(now.getTime() + durationMin * 60 * 1000).toISOString();
+
+    const { data, error } = await supabase
+      .from("sessions")
+      .insert([{
+        ends_at: endsAt,
+        max_per_device: maxPerDevice,
+        code_interval_sec: codeIntervalSec,
+        active: true
+      }])
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    currentSessionId = data.id;
+    el("sid").textContent = currentSessionId;
+    el("endsAt").textContent = fmt(data.ends_at);
+
+    // init QR
+    const url = `${STUDENT_URL}?sid=${encodeURIComponent(currentSessionId)}`;
+    drawQr(url);
+    el("studentLinkBox").textContent = url;
+
+    // start rolling codes
+    await rotateCodeOnce();
+    startTimers();
+    setStatus(true);
+  }
+
+  async function rotateCodeOnce() {
+    if (!currentSessionId) return;
+
+    // fetch session settings
+    const { data: s, error: sErr } = await supabase
+      .from("sessions")
+      .select("id, active, ends_at, code_interval_sec")
+      .eq("id", currentSessionId)
+      .single();
+
+    if (sErr) throw sErr;
+
+    const now = new Date();
+    if (!s.active || now > new Date(s.ends_at)) {
+      await stopSession();
+      return;
+    }
+
+    const intervalSec = Math.max(10, Number(s.code_interval_sec || 60));
+    const code = randomCode6();
+    const exp = new Date(now.getTime() + intervalSec * 1000).toISOString();
+
+    const { error } = await supabase
+      .from("sessions")
+      .update({ current_code: code, code_expires_at: exp })
+      .eq("id", currentSessionId);
+
+    if (error) throw error;
+
+    el("codeBox").textContent = code;
+    el("codeExp").textContent = fmt(exp);
+    el("hint").textContent = "اعرض الكود على الشاشة — الطلبة لازم يكتبوه";
+  }
+
+  function startTimers() {
+    stopTimers();
+    // rotate code every codeIntervalSec, but we also poll session end
+    rotateTimer = setInterval(rotateCodeOnce, 1000 * Math.max(10, Number(el("codeIntervalSec").value || 60)));
+
+    sessionPollTimer = setInterval(async () => {
+      if (!currentSessionId) return;
+      const { data: s } = await supabase
+        .from("sessions")
+        .select("active, ends_at, code_interval_sec")
+        .eq("id", currentSessionId)
+        .single();
+
+      if (!s) return;
+      el("endsAt").textContent = fmt(s.ends_at);
+
+      const now = new Date();
+      if (!s.active || now > new Date(s.ends_at)) {
+        await stopSession();
+      }
+    }, 5000);
+  }
+
+  function stopTimers() {
+    if (rotateTimer) clearInterval(rotateTimer);
+    if (sessionPollTimer) clearInterval(sessionPollTimer);
+    rotateTimer = null;
+    sessionPollTimer = null;
+  }
+
+  async function stopSession() {
+    if (!currentSessionId) return;
+    await supabase.from("sessions").update({ active: false }).eq("id", currentSessionId);
+    stopTimers();
+    setStatus(false);
+    el("hint").textContent = "انتهت الجلسة.";
+    el("codeBox").textContent = "------";
+    el("codeExp").textContent = "-";
+  }
+
+  function setStatus(active) {
+    el("statusPill").textContent = active ? "نشطة" : "غير نشطة";
+    el("startBtn").disabled = active;
+    el("stopBtn").disabled = !active;
+  }
+
+  el("startBtn").addEventListener("click", async () => {
+    try {
+      await createSession();
+    } catch (e) {
+      alert("حصل خطأ: " + (e?.message || e));
+    }
+  });
+
+  el("stopBtn").addEventListener("click", async () => {
+    try { await stopSession(); } catch(e) { alert("حصل خطأ: " + (e?.message || e)); }
+  });
+</script>
+</body>
+</html>
